@@ -30,24 +30,12 @@ def unzip(zipped):
         new_params[kk] = vv.get_value()
     return new_params
 
-
-def _p(pp, name):
-    return '%s_%s' % (pp, name)
-
-
 def itemlist(tparams):
     """
     Get the list of parameters. 
     Note that tparams must be OrderedDict
     """
     return [vv for kk, vv in tparams.iteritems()]
-
-
-def ortho_weight(ndim):
-    W = numpy.random.randn(ndim, ndim)
-    u, s, v = numpy.linalg.svd(W)
-    return u.astype(config.floatX)
-
 
 def norm_weight(nin,nout=None, scale=0.1, ortho=True):
     """
@@ -91,6 +79,9 @@ def linear(x):
     Linear activation function
     """
     return x
+
+def ReLU(x):
+    return tensor.nnet.relu(x)
 
 def l2norm(X):
     """

@@ -1,214 +1,109 @@
-
-from __future__ import print_function
-import six.moves.cPickle as pickle
-
-from collections import OrderedDict
-import sys
-import time
-
-import numpy as np
-import progressbar
-import pdb
 import theano
-import gzip
-import cPickle
-from theano import config
 import theano.tensor as tensor
+from theano import config
+from theano.tensor.nnet import conv2d
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-from load_data import *
-from utils import *
-from optim import *
-from vocab import *
-from model import init_params, build_model
+import numpy as np
+from utils import xavier_weight, numpy_floatX, ReLU
+from conv_layer import *
+import pdb 
+import cv2
 
-# Set the random number generators' seeds for consistency
-def train_lstm(
-    imshape = (3,224,224),
-    nCategories = 51,
-    batch = 10,
+def inceptionv4(options,params,rng, input):
+    results = OrderedDict()
+    # inception v4 lower part
+    params['W1_1'], results['layerR0'] = convolu_theano(rng, input,filter_shape=(32,3,3,3),image_shape=options['image_shape'],stride=(1,1),poolsize=(2,2), weights_path=None)
+    params['W1_2'], results['layerR1'] = convolu_theano(rng, ReLU(results['layerR1']),filter_shape=(32,3,3,3),image_shape=layerR0.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W1_3'], results['layerR2'] = convolu_theano(rng, ReLU(results['layerR2']),filter_shape=(64,3,3,3),image_shape=layerR1.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W1_4'], results['layerR3'] = convolu_theano(rng, ReLU(results['layerR3']),filter_shape=(96,3,3,3),image_shape=layerR2.shape,stride=(1,1),poolsize=(2,2), weights_path=None)
+    results['layerL1'] = fancy_max_pool(ReLU(results['layerR2']), pool_shape=(3,3), pool_stride=(1,1), ignore_border=False)
+    # inception v4 lower part concatenation
+    results['filter_concate_1'] = theano.concatenate([results['layerL1'], results['layerR3']], axis=3)
 
-    max_epochs=3,  # The maximum number of epoch to run.
-    lrate = [0.001,0.001,0.001],
-    decay_c=0.,  # Weight decay for the classifier applied to the U weights.
-    maxlen=100,  # Maximum length of captions 
-    optimizer='rmsprop',  # sgd, adadelta and rmsprop available
-    saveto='classification_model',  # The best model will be saved there.
-    dispFreq=10000, # Display to stdout the training progress every N updates.
-    saveFreq=20000, #9210,  # Save the parameters after every saveFreq updates.
-    validFreq=140000, #2*9210,
-    testFreq=5*140000,
-    margin = 0.55,
+    # inception v4 middle part
+    params['W2_1'], results['layerR4'] = convolu_theano(rng, results['filter_concate_1'], filter_shape=(64,3,1,1),image_shape=filter_concate_1.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W2_2'], results['layerL2'] = convolu_theano(rng, results['filter_concate_1'], filter_shape=(64,3,1,1),image_shape=filter_concate_1.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W2_3'], results['layerL3'] = convolu_theano(rng, ReLU(results['layerL2']), filter_shape=(96,3,1,1),image_shape=layerL2.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W2_4'], results['layerR5'] = convolu_theano(rng, ReLU(results['layerR4']), filter_shape=(64,3,7,1),image_shape=layerR4.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W2_5'], results['layerR6'] = convolu_theano(rng, ReLU(results['layerR5']), filter_shape=(64,3,1,7),image_shape=layerR5.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    params['W2_6'], results['layerR7'] = convolu_theano(rng, ReLU(results['layerR7']), filter_shape=(96,3,3,3),image_shape=layerR6.shape,stride=(0,0),poolsize=(2,2), weights_path=None)
+    #inception v4 middle part concatenation
+    results['filter_concate_2'] = theano.concatenate([results['layerL3'],results['layerR7'] ], axis=3)
 
-    # Parameter for extra option.
-    reload_model=None,  # Path to a saved model we want to start from.
-    test_size=-1,  # If >0, we keep only this number of test example.
-    load_from_old = False,
-    ):
+    #inception v4 upper part
+    results['layerR8'] = fancy_max_pool(results['filter_concate_2'], pool_shape=(2,2), pool_stride=(1,1), ignore_border=False)
+    params['W3_1'], results['layerL4'] = convolu_theano(rng, results['filter_concate_2'] , filter_shape=(192,3,3,3),image_shape=filter_concate_2.shape, stride=(0,0), poolsize=(2,2), weights_path=None)
+    #inception v4 upper part concatenation
+    results['filter_concate_3'] = theano.concatenate([ReLU(results['layerL4']),results['layerR8']], axis=3)
 
-    # Model options
-    model_options = {}
-    model_options['image_shape'] = imshape
-    model_options['nCategories'] = nCategories
+    return params, results
+
+def param_init_conv_lstm(options,params,channel=None, dim_h=None, dim_w=None):
+    if channel == None:
+        channel = options['channel']
+    if dim_h == None:
+        dim_h = options['dim_h']
+    if dim_w == None:
+        dim_w = options['dim_w']
     
-    model_options['batch'] = batch
-    model_options['lrate'] = lrate
-    model_options['max_epochs'] = max_epochs
-    model_options['optimizer'] = optimizer
+    params['Wz'] = inceptionv4(None,channel,dim_h,dim_w);
+    params['Uz'] = inceptionv4(None,channel,dim_h,dim_w);
+    params['Wr'] = inceptionv4(None,channel,dim_h,dim_w);
+    params['Ur'] = inceptionv4(None,channel,dim_h,dim_w);
+    params['Wh'] = inceptionv4(None,channel,dim_h,dim_w);
+    params['Uh'] = inceptionv4(None,channel,dim_h,dim_w);
 
-    model_options['dispFreq'] = dispFreq
-    model_options['validFreq'] = validFreq
-    model_options['saveto'] = saveto
-    model_options['saveFreq'] = saveFreq
-    
-    ########################################################
-    # Load training and development sets
+    return params
 
-    print('\nBuilding Forward Pass')
-    # Read from Previous Training Result
-    if load_from_old:
-        print('Loading Previously Trained Weight')
-        start = 14
-        with open('../save/weights_14.pkl', 'rb') as W:
-            tparams = pickle.load(W)
- 
-    else:
-        start = 0
-        params = init_params(model_options)
-        tparams = init_tparams(params)
-    pdb.set_trace()
-    trng, use_noise, x, mask, cost, pred= build_model(params, model_options)
-    print('Done')
-    
-    pdb.set_trace()
 
-    print('\nBuilding Backward Pass')
-    if decay_c > 0.:
-        decay_c = theano.shared(numpy_floatX(decay_c), name='decay_c')
-        weight_decay = 0.
-        for kk, vv in tparams.iteritems():
-            weight_decay += (vv ** 2).sum()
-        weight_decay *= decay_c
-        cost += weight_decay
-    
-    f_cost = theano.function(inputs = [mask,x,y],
-                             outputs = [cost],
-                             name='f_cost',
-                             allow_input_downcast=True)
-
-    grads = tensor.grad(cost, wrt=itemlist(tparams))
-    f_grad = theano.function(inputs = [mask,x,y],
-                             outputs = grads, 
-                             name='f_grad',
-                             allow_input_downcast=True)
-    print('Done')
-    ########################################################
-    print('Optimization')
-    lr = tensor.scalar(name='lr')
-    f_grad_shared, f_update = eval(optimizer)(lr, tparams, grads, x, mask, cost)
-    ########################################################
+#Skip-Thoughts
+def conv_lstm_layer(tparams, state_below, options, mask):
     '''
-    print('Loading data...')
-    model_options['validFreq'] = validFreq
-    model_options['testFreq'] = testFreq
-    train_dataset, valid_dataset = load_data(model_options)
+    Feedforward pass through LSTM
+    '''
+    nsamples = state_below.shape[0]
+    nsteps = state_below.shape[1]
+    height = state_below.shape[2]
+    width = state_below.shape[3]
+    dim = height*width
 
-    train_app_feats = train_dataset['App']
-    train_of_feats = train_dataset['OF']
-    train_target = train_dataset['target']
-    train_clips = train_dataset['name']
-
-    valid_app_feats = valid_dataset['App']
-    valid_of_feats = valid_dataset['OF']
-    valid_target = valid_dataset['target']
-    valid_clips = valid_dataset['name']
-
-    train_caps, train_caps_mask = get_caps_data(train_dataset['target'],worddict,maxlen,n_words)
-#    valid_caps, valid_caps_mask = get_caps_data(valid_dataset['target'],worddict,maxlen,n_words)
-
-    train_caps_length = train_caps.shape[1]
-#    valid_caps_length = valid_caps.shape[1]
-    print('Done')
-
-   
-    print("%d train examples" % len(train_app_feats))
+    def _slice(_x, n, dim):
+        if _x.ndim == 3:
+            return _x[:, :, n*dim:(n+1)*dim]
+        return _x[:, n*dim:(n+1)*dim]
     pdb.set_trace()
-    #print("%d test examples" % len(test_labels))
-    #print("%d valid examples" % len(valid_app_feats)) 
+    state_below_ = np.concatenate((tparams['Wz'].predict[state_below],tparams['Wr'].predict[state_below]),axis=1)
+    state_belowx = tparams['Wh'].predict[state_below]
 
-    history_errs = []
-    best_p = None
-    bad_count = 0
+    def _step_slice(m_,x_, xx_, h_, U, Ux):
+        preact = np.concatenate((tparams['Wz'].predict[h_],tparams['Wr'].predict[h_]),axis=1)
+        preact += x_
 
-    uidx = 0  # the number of update done
-    estop = False  # early stop
-    start_time = time.time()
+        r = tensor.nnet.sigmoid(_slice(preact, 0, dim))
+        u = tensor.nnet.sigmoid(_slice(preact, 1, dim))
 
-    try:
-        for eidx in range(start,max_epochs):
-            n_samples = 0
-            cost = 0
-            show_cost = 0
-            total_cost_sep = numpy.zeros((4,))
-            # Get new index for shuffled cpations
-            new_cap_idx = numpy.random.permutation(train_caps_length)
- 
-            bar = progressbar.ProgressBar(maxval = 1120,  \
-                                        widgets = [progressbar.AnimatedMarker(), \
-                                        'epoch progress', \
-                                        ' ' , progressbar.Counter(),\
-                                        ' ' , progressbar.Percentage(),\
-                                        ' ', progressbar.ETA(), \
-                                        ]).start()
+        preactx = tparams['Wh'].predict[h_]
+        preactx = preactx * r
+        preactx = preactx + xx_
 
-            for i in range(0,140000,batch_size):
-                uidx += batch_size
-                use_noise.set_value(1.0)
-                # Select the one video clip to train
-                v_feats, v_optic, v_mask_app, v_mask_of, v_caps, v_mask_caps = get_data(train_app_feats, train_of_feats, train_caps, train_caps_mask, i, new_cap_idx, batch_size)
- 
-                n_samples += 1
-                cost= f_grad_shared(v_feats, v_mask_app, v_optic, v_mask_of, v_caps, v_mask_caps)
-                f_update(lrate[eidx])
-                total_cost = f_cost(v_feats, v_mask_app, v_optic, v_mask_of, v_caps, v_mask_caps)
-                total_cost_sep[0] += total_cost[0] #Total
-                total_cost_sep[1] += total_cost[1] #cost_s
-                total_cost_sep[2] += total_cost[2] #cost_v
-                total_cost_sep[3] += total_cost[3] #cost_cap
+        h = tensor.tanh(preactx)
 
-                bar.update(n_samples)
+        h = u * h_ + (1. - u) * h
+        h = m_[:,None]*h+(1.-m_)[:,None]*h_
 
-                if numpy.isnan(cost) or numpy.isinf(cost):
-                    print('bad cost detected: ', cost)
-                    return 1., 1., 1.
+        return h
 
-                if numpy.mod(uidx,dispFreq) == 0:
-                    print('Epoch ', eidx, 'lrate  ',lrate[eidx], 'Update ', uidx, 'Cost ',total_cost_sep[0])
-                    print ("Cap-Video cost: " + str(total_cost_sep[1]) + " Video-Cap cost: " + str(total_cost_sep[2]) + " Cap cost: " + str(total_cost_sep[3]))
-                    total_cost_sep = numpy.zeros((4,))           
+    seqs = [mask, state_below_, state_belowx]
 
-                if numpy.mod(uidx, saveFreq) == 0:
-                    pickle.dump(model_options, open('../save/model.pkl','wb'),-1)
-                    pickle.dump(tparams, open('../save/weights_%d.pkl' % eidx,'wb',-1))
-
-            bar.finish()
-            print('Seen %d batches' % n_samples)
-
-            if estop:
-                break 
-
-    except KeyboardInterrupt:
-        print("Training interupted")
-
-    end_time = time.time()
-    print('The code run for %d epochs, with %f sec/epochs' % (
-        (eidx + 1), (end_time - start_time) / (1. * (eidx + 1))))
-    print( ('Training took %.1fs' %
-            (end_time - start_time)), file=sys.stderr)
-
-'''
-
-if __name__ == '__main__':
-    # See function train for all possible parameter and there definition.
-    import conv_lstm
-    conv_lstm.train_lstm()
-
+    rval, updates = theano.scan(_step_slice,
+                                sequences=seqs,
+                                outputs_info = [None],
+                                non_sequences = [tparams['Uz'],
+                                                 tparams['Ur'],
+                                                 tparams['Uh'],],
+                                name=_p(prefix, '_layers'),
+                                n_steps=nsteps,
+                                profile=False,
+                                strict=True)
+    rval = [rval]
+    return rval[0]

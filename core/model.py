@@ -1,19 +1,25 @@
-"""
-Model specification
-"""
 import theano
 import theano.tensor as tensor
 from theano.tensor.extra_ops import fill_diagonal
 import numpy as np
 from theano import config
-
 from collections import OrderedDict
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from utils import ortho_weight, norm_weight, xavier_weight, tanh, l2norm, numpy_floatX
+from fclayer import *
+from conv_lstm import *
 
-from utils import _p, ortho_weight, norm_weight, xavier_weight, tanh, l2norm, numpy_floatX
-from layers import get_layer
-from find import find
 import pdb
+
+def get_layer(name):
+    """
+    Return param init and feedforward functions for the given layer name
+    """
+    layers = {'conv_lstm': ('param_init_conv_lstm', 'conv_lstm_layer'),
+              'fc':('fc_init','fully_layer') }
+
+    fns = layers[name]
+    return (eval(fns[0]), eval(fns[1]))
 
 def init_params(options):
     """
@@ -21,17 +27,9 @@ def init_params(options):
     """
     params = OrderedDict()
     # conv-LSTM
-    params = get_layer('conv_lstm')[0](options, params, 
-                                            channel=options['channel'],
-                                            dim_h=options['dim_h'], 
-                                            dim_w=options['dim_w'])
+    params = get_layer('conv_lstm')[0](options, params)
     # fc
-    params = get_layer('fc')[0](options, params,
-                                    nCategories=options['nCategories'],
-                                    channel=options['channel'],
-                                    dim_h=options['dim_h'], 
-                                    dim_w=options['dim_w'])
-
+    params = get_layer('fc')[0](options, params)
 
     return params
 
